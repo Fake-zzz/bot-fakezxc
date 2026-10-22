@@ -1,0 +1,16 @@
+{
+  "name": "bot-fakezxc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord bot with a /hello slash command",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  }
+}
