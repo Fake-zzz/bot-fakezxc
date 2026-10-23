@@ -2,7 +2,7 @@
   "name": "bot-fakezxc",
   "version": "1.0.0",
   "private": true,
-  "description": "Discord bot with a /hello slash command",
+  "description": "Ritmo habit tracker website and Discord notification bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
