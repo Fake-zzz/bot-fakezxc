@@ -166,7 +166,14 @@ async function postNotification(profile, notification) {
 async function deliverNotification(profile, notification, dedupeKey) {
   try {
     const user = await client.users.fetch(profile.discord_user_id);
-    if(notification.type==="task_reminder"){
+    if(notification.type==="discord_setup"){
+      const embed=new EmbedBuilder().setColor(0x5865f2).setAuthor({name:"Ritmo · Configuração concluída"}).setTitle("Tudo pronto para começar ✨").setDescription("Sua conta do Discord já está conectada ao Ritmo. Vou enviar seus lembretes e resumos por mensagem direta, conforme as preferências no site.").setFooter({text:"Ajuste as notificações a qualquer momento nas configurações do Ritmo."}).setTimestamp(new Date());
+      await user.send({embeds:[embed]});
+    }else if(notification.type==="goal_achieved"){
+      const details=notification.details||{};
+      const embed=new EmbedBuilder().setColor(0xe3b85c).setAuthor({name:"Ritmo · Meta alcançada"}).setTitle("✨ Você chegou lá: "+details.name).setDescription("A meta foi concluída neste período. Cada registro aproximou você do resultado.").addFields({name:"Progresso",value:String(details.total)+" / "+String(details.target)+" "+String(details.unit||""),inline:true}).setFooter({text:"Um passo de cada vez."}).setTimestamp(new Date());
+      await user.send({embeds:[embed]});
+    }else if(notification.type==="task_reminder"){
       const details=notification.details||{};
       const repeatLabel={once:"Tarefa única",daily:"Tarefa diária",weekly:"Tarefa semanal",monthly:"Tarefa mensal"}[details.repeat_frequency]||"Tarefa";
       const description=details.description||"Está na hora de cuidar do próximo passo.";
@@ -210,6 +217,7 @@ async function deliverNotification(profile, notification, dedupeKey) {
 }
 
 async function sendTaskReminders(profile, nowParts) {
+  if (!profile.discord_notifications_enabled || !profile.notify_tasks) return;
   const userFilter = "user_id=eq." + encodeURIComponent(profile.user_id);
   const tasks = await getRows("tasks", "select=*&" + userFilter + "&is_active=eq.true");
   const todayCheckins = await getRows(
@@ -282,8 +290,45 @@ function habitPeriodRange(habit,date){
   return {start,end:dateOffset(next,-1)};
 }
 
+async function sendGoalNotifications(profile,nowParts){
+  if(!profile.discord_notifications_enabled||!profile.notify_goals)return;
+  const userFilter="user_id=eq."+encodeURIComponent(profile.user_id);
+  const [goals,progress]=await Promise.all([
+    getRows("goals","select=*&"+userFilter+"&is_active=eq.true"),
+    getRows("goal_progress_entries","select=goal_id,entry_date,amount&"+userFilter+"&entry_date=gte."+dateOffset(nowParts.date,-32)+"&entry_date=lte."+nowParts.date)
+  ]);
+  for(const goal of goals){
+    if((goal.starts_on&&nowParts.date<goal.starts_on)||(goal.ends_on&&nowParts.date>goal.ends_on))continue;
+    const range=periodRange(goal,nowParts.date);
+    const total=progress.filter((entry)=>entry.goal_id===goal.id&&entry.entry_date>=range.start&&entry.entry_date<=range.end).reduce((sum,entry)=>sum+Number(entry.amount||0),0);
+    if(total<Number(goal.target_value))continue;
+    await postNotification(profile,{
+      dedupeKey:"goal:"+goal.id+":"+range.start,type:"goal_achieved",entityId:goal.id,
+      details:{name:goal.name,total,target:goal.target_value,unit:goal.unit},
+      message:"✨ Meta alcançada: "+goal.name+" ("+total+"/"+goal.target_value+" "+goal.unit+")."
+    });
+  }
+}
+
+async function sendSetupConfirmation(profile){
+  if(!profile.discord_linked_at||profile.discord_setup_notified_at)return;
+  const linkedAt=new Date(profile.discord_linked_at),dedupeKey="discord_setup:"+profile.user_id+":"+linkedAt.getTime();
+  await postNotification(profile,{
+    dedupeKey,type:"discord_setup",details:{linked_at:profile.discord_linked_at},
+    message:"Sua configuração do Ritmo está pronta. As mensagens diretas serão enviadas conforme suas preferências no site."
+  });
+  const rows=await getRows("notification_log","select=status&dedupe_key=eq."+encodeURIComponent(dedupeKey)+"&limit=1");
+  if(rows&&rows[0]&&rows[0].status==="sent"){
+    const notifiedAt=new Date().toISOString();
+    await supabaseRequest("ritmo?user_id=eq."+encodeURIComponent(profile.user_id),{
+      method:"PATCH",headers:{Prefer:"return=minimal"},body:{discord_setup_notified_at:notifiedAt}
+    });
+    profile.discord_setup_notified_at=notifiedAt;
+  }
+}
+
 async function sendDailySummary(profile, nowParts) {
-  if (!profile.daily_summary_enabled) return;
+  if (!profile.discord_notifications_enabled || !profile.daily_summary_enabled) return;
   const currentMinutes = Number(nowParts.time.slice(0, 2)) * 60 + Number(nowParts.time.slice(3, 5));
   const summaryTime = String(profile.daily_summary_time || "21:00").slice(0, 5);
   const summaryMinutes = Number(summaryTime.slice(0, 2)) * 60 + Number(summaryTime.slice(3, 5));
@@ -326,11 +371,10 @@ async function sendDailySummary(profile, nowParts) {
     return "✳ " + habit.name + ": " + days + (days === 1 ? " dia" : " dias") + ".";
   });
 
-  const body = ["📋 **Resumo do dia — " + nowParts.date + "**"]
-    .concat(taskLines)
-    .concat(goalLines.length ? ["Metas:", ...goalLines] : ["Metas: nenhuma ativa."])
-    .concat(habitLines.length ? ["Hábitos:", ...habitLines] : ["Hábitos: nenhum ativo."])
-    .join("\n");
+  const body = ["📋 **Resumo do dia — " + nowParts.date + "**"];
+  if (profile.notify_tasks) body.push(...taskLines);
+  if (profile.notify_goals) body.push(...(goalLines.length ? ["Metas:", ...goalLines] : ["Metas: nenhuma ativa."]));
+  if (profile.notify_habit_milestones) body.push(...(habitLines.length ? ["Hábitos:", ...habitLines] : ["Hábitos: nenhum ativo."]));
 
   await postNotification(profile, {
     dedupeKey: "summary:" + nowParts.date,
@@ -360,6 +404,7 @@ function quitMilestones(start){
 }
 
 async function sendHabitMilestones(profile,nowParts){
+  if(!profile.discord_notifications_enabled||!profile.notify_habit_milestones)return;
   const userFilter="user_id=eq."+encodeURIComponent(profile.user_id);
   const habits=await getRows("habits","select=*&"+userFilter+"&is_active=eq.true&category=eq.quit&notify_milestones=eq.true");
   const now=new Date();
@@ -388,14 +433,20 @@ async function runNotificationCycle() {
   try {
     const profiles = await getRows(
       "ritmo",
-      "select=user_id,timezone,discord_user_id,daily_summary_enabled,daily_summary_time&discord_user_id=not.is.null"
+      "select=user_id,timezone,discord_user_id,daily_summary_enabled,daily_summary_time,discord_notifications_enabled,notify_tasks,notify_goals,notify_habit_milestones,discord_linked_at,discord_setup_notified_at&discord_user_id=not.is.null"
     );
     for (const profile of profiles) {
       if (!profile.discord_user_id) continue;
       profile.timezone = profile.timezone || "America/Sao_Paulo";
+      profile.discord_notifications_enabled = profile.discord_notifications_enabled !== false;
+      profile.notify_tasks = profile.notify_tasks !== false;
+      profile.notify_goals = profile.notify_goals !== false;
+      profile.notify_habit_milestones = profile.notify_habit_milestones !== false;
+      await sendSetupConfirmation(profile);
       const nowParts = localDateTime(new Date(), profile.timezone);
       await sendTaskReminders(profile, nowParts);
       await sendHabitMilestones(profile, nowParts);
+      await sendGoalNotifications(profile, nowParts);
       await sendDailySummary(profile, nowParts);
     }
   } catch (error) {
