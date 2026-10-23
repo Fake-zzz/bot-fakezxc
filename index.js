@@ -266,18 +266,19 @@ function addCalendarMonths(key,months){
 
 function habitPeriodRange(habit,date){
   const anchor=habit.started_on||date,unit=habit.period_unit||"day",interval=Math.max(1,Number(habit.period_interval||1));
-  let start=anchor;
+  let start=anchor,next;
   if(unit==="day"||unit==="week"){
     const length=interval*(unit==="week"?7:1);
     start=dateOffset(anchor,Math.floor(daysBetween(anchor,date)/length)*length);
+    next=dateOffset(start,length);
   }else{
     const months=interval*(unit==="year"?12:1);
     let count=Math.max(0,Math.floor(((Number(date.slice(0,4))-Number(anchor.slice(0,4)))*12+Number(date.slice(5,7))-Number(anchor.slice(5,7)))/months));
     start=addCalendarMonths(anchor,count*months);
     while(start>date&&count>0)start=addCalendarMonths(anchor,--count*months);
     while(addCalendarMonths(anchor,(count+1)*months)<=date)start=addCalendarMonths(anchor,++count*months);
+    next=addCalendarMonths(anchor,(count+1)*months);
   }
-  const next=unit==="day"?dateOffset(start,interval):unit==="week"?dateOffset(start,interval*7):addCalendarMonths(start,interval*(unit==="year"?12:1));
   return {start,end:dateOffset(next,-1)};
 }
 
