@@ -2,6 +2,7 @@ const { loadEnvFile } = require("node:process");
 const {
   Client,
   Events,
+  EmbedBuilder,
   GatewayIntentBits,
   REST,
   Routes,
@@ -103,6 +104,9 @@ function occursOn(task, date, timezone = "America/Sao_Paulo") {
   if (task.repeat_frequency === "weekly") {
     return (task.repeat_days || []).map(Number).includes(weekdayForDate(date));
   }
+  if (task.repeat_frequency === "monthly") {
+    return Number(task.repeat_month_day || 0) === Number(date.slice(8, 10));
+  }
   return false;
 }
 
@@ -162,7 +166,27 @@ async function postNotification(profile, notification) {
 async function deliverNotification(profile, notification, dedupeKey) {
   try {
     const user = await client.users.fetch(profile.discord_user_id);
-    await user.send(notification.message);
+    if(notification.type==="task_reminder"){
+      const details=notification.details||{};
+      const repeatLabel={once:"Tarefa única",daily:"Tarefa diária",weekly:"Tarefa semanal",monthly:"Tarefa mensal"}[details.repeat_frequency]||"Tarefa";
+      const description=details.description||"Está na hora de cuidar do próximo passo.";
+      const dateLabel=new Intl.DateTimeFormat("pt-BR",{weekday:"long",day:"numeric",month:"long",timeZone:profile.timezone||"America/Sao_Paulo"}).format(new Date((details.date||"")+"T12:00:00Z"));
+      const embed=new EmbedBuilder()
+        .setColor(0x57b58a)
+        .setAuthor({name:"Ritmo · Lembrete"})
+        .setTitle("⏰ Hora de fazer: "+details.title)
+        .setDescription(description)
+        .addFields(
+          {name:"Quando",value:dateLabel+" às "+(details.time||"--:--"),inline:true},
+          {name:"Tipo",value:repeatLabel,inline:true},
+          {name:"Seu espaço",value:"Marque a tarefa como concluída no Ritmo quando terminar.",inline:false}
+        )
+        .setFooter({text:"Um passo de cada vez."})
+        .setTimestamp(new Date());
+      await user.send({embeds:[embed]});
+    }else{
+      await user.send(notification.message);
+    }
     await supabaseRequest(
       "notification_log?dedupe_key=eq." + encodeURIComponent(dedupeKey),
       {
@@ -210,7 +234,7 @@ async function sendTaskReminders(profile, nowParts) {
       dedupeKey: "task:" + task.id + ":" + nowParts.date,
       type: "task_reminder",
       entityId: task.id,
-      details: { title: task.title, date: nowParts.date },
+      details: { title: task.title, description: task.description || "", date: nowParts.date, time: scheduled, repeat_frequency: task.repeat_frequency },
       message: "⏰ Hora da tarefa: **" + task.title + "**." + note
     });
   }
@@ -233,6 +257,30 @@ function dateOffset(date, days) {
   return value.toISOString().slice(0, 10);
 }
 
+function addCalendarMonths(key,months){
+  const parts=key.split("-").map(Number),first=new Date(Date.UTC(parts[0],parts[1]-1+months,1,12));
+  const last=new Date(Date.UTC(first.getUTCFullYear(),first.getUTCMonth()+1,0,12)).getUTCDate();
+  first.setUTCDate(Math.min(parts[2],last));
+  return first.toISOString().slice(0,10);
+}
+
+function habitPeriodRange(habit,date){
+  const anchor=habit.started_on||date,unit=habit.period_unit||"day",interval=Math.max(1,Number(habit.period_interval||1));
+  let start=anchor;
+  if(unit==="day"||unit==="week"){
+    const length=interval*(unit==="week"?7:1);
+    start=dateOffset(anchor,Math.floor(daysBetween(anchor,date)/length)*length);
+  }else{
+    const months=interval*(unit==="year"?12:1);
+    let count=Math.max(0,Math.floor(((Number(date.slice(0,4))-Number(anchor.slice(0,4)))*12+Number(date.slice(5,7))-Number(anchor.slice(5,7)))/months));
+    start=addCalendarMonths(anchor,count*months);
+    while(start>date&&count>0)start=addCalendarMonths(anchor,--count*months);
+    while(addCalendarMonths(anchor,(count+1)*months)<=date)start=addCalendarMonths(anchor,++count*months);
+  }
+  const next=unit==="day"?dateOffset(start,interval):unit==="week"?dateOffset(start,interval*7):addCalendarMonths(start,interval*(unit==="year"?12:1));
+  return {start,end:dateOffset(next,-1)};
+}
+
 async function sendDailySummary(profile, nowParts) {
   if (!profile.daily_summary_enabled) return;
   const currentMinutes = Number(nowParts.time.slice(0, 2)) * 60 + Number(nowParts.time.slice(3, 5));
@@ -241,12 +289,13 @@ async function sendDailySummary(profile, nowParts) {
   if (currentMinutes < summaryMinutes) return;
 
   const userFilter = "user_id=eq." + encodeURIComponent(profile.user_id);
-  const [tasks, checkins, goals, progress, habits] = await Promise.all([
+  const [tasks, checkins, goals, progress, habits, countEntries] = await Promise.all([
     getRows("tasks", "select=*&" + userFilter + "&is_active=eq.true"),
     getRows("task_checkins", "select=task_id,status&" + userFilter + "&occurrence_date=eq." + nowParts.date),
     getRows("goals", "select=*&" + userFilter + "&is_active=eq.true"),
     getRows("goal_progress_entries", "select=goal_id,entry_date,amount&" + userFilter + "&entry_date=gte." + dateOffset(nowParts.date, -31) + "&entry_date=lte." + nowParts.date),
-    getRows("habits", "select=*&" + userFilter + "&is_active=eq.true")
+    getRows("habits", "select=*&" + userFilter + "&is_active=eq.true"),
+    getRows("habit_count_entries", "select=habit_id,entry_date,amount&" + userFilter)
   ]);
 
   const todaysTasks = tasks.filter((task) => occursOn(task, nowParts.date, profile.timezone));
@@ -266,6 +315,12 @@ async function sendDailySummary(profile, nowParts) {
   });
 
   const habitLines = habits.map((habit) => {
+    if(habit.category==="count"){
+      const range=habitPeriodRange(habit,nowParts.date);
+      const total=countEntries.filter((entry)=>entry.habit_id===habit.id&&entry.entry_date>=range.start&&entry.entry_date<=range.end).reduce((sum,entry)=>sum+Number(entry.amount||0),0);
+      const reached=habit.count_polarity==="negative"?total<Number(habit.target_count):total>=Number(habit.target_count);
+      return (reached?"✅ ":"⬜ ")+habit.name+": "+total+"/"+habit.target_count+" "+(habit.measure_unit||"vezes")+" no período.";
+    }
     const days = daysBetween(habit.current_streak_started_on, nowParts.date);
     return "✳ " + habit.name + ": " + days + (days === 1 ? " dia" : " dias") + ".";
   });
@@ -284,23 +339,45 @@ async function sendDailySummary(profile, nowParts) {
   });
 }
 
-async function sendHabitMilestones(profile, nowParts) {
-  const userFilter = "user_id=eq." + encodeURIComponent(profile.user_id);
-  const habits = await getRows("habits", "select=*&" + userFilter + "&is_active=eq.true");
-  const currentMinutes = Number(nowParts.time.slice(0, 2)) * 60 + Number(nowParts.time.slice(3, 5));
-  if (currentMinutes < 9 * 60) return;
+function addUtcMonths(date,months){
+  const result=new Date(date),day=result.getUTCDate();
+  result.setUTCDate(1);result.setUTCMonth(result.getUTCMonth()+months);
+  const last=new Date(Date.UTC(result.getUTCFullYear(),result.getUTCMonth()+1,0)).getUTCDate();
+  result.setUTCDate(Math.min(day,last));
+  return result;
+}
 
-  for (const habit of habits) {
-    const interval = Math.max(1, Number(habit.notification_interval_days || 5));
-    const days = daysBetween(habit.current_streak_started_on, nowParts.date);
-    if (days < 1 || days % interval !== 0) continue;
-    await postNotification(profile, {
-      dedupeKey: "habit:" + habit.id + ":milestone:" + nowParts.date + ":" + days,
-      type: "habit_milestone",
-      entityId: habit.id,
-      details: { name: habit.name, day: days, date: nowParts.date },
-      message: "✳ Você completou **" + days + " dias** acompanhando o hábito **" + habit.name + "**. Continue no seu ritmo!"
-    });
+function quitMilestones(start){
+  const values=[];
+  for(const days of [1,2,3,7,14,21,28]){
+    const date=new Date(start);date.setUTCDate(date.getUTCDate()+days);
+    values.push({date,label:days<7?days+" dia(s)":(days/7)+" semana(s)"});
+  }
+  for(let month=1;month<=6;month+=1)values.push({date:addUtcMonths(start,month),label:month+" mês(es)"});
+  for(let year=1;year<=100;year+=1)values.push({date:addUtcMonths(start,year*12),label:year+" ano(s)"});
+  return values;
+}
+
+async function sendHabitMilestones(profile,nowParts){
+  const userFilter="user_id=eq."+encodeURIComponent(profile.user_id);
+  const habits=await getRows("habits","select=*&"+userFilter+"&is_active=eq.true&category=eq.quit&notify_milestones=eq.true");
+  const now=new Date();
+  for(const habit of habits){
+    const start=new Date(habit.quit_started_at||((habit.current_streak_started_on||habit.started_on)+"T00:00:00Z"));
+    if(Number.isNaN(start.getTime()))continue;
+    for(const milestone of quitMilestones(start)){
+      const local=localDateTime(milestone.date,profile.timezone);
+      if(local.date<nowParts.date)continue;
+      if(local.date>nowParts.date)break;
+      if(milestone.date>now)break;
+      const dedupeKey="habit:"+habit.id+":quit:"+milestone.label+":"+milestone.date.toISOString();
+      await postNotification(profile,{
+        dedupeKey,type:"habit_milestone",entityId:habit.id,
+        details:{name:habit.name,milestone:milestone.label,at:milestone.date.toISOString()},
+        message:"✳ **Marco alcançado: "+milestone.label+" sem "+habit.name+"!** Continue no seu ritmo."
+      });
+      break;
+    }
   }
 }
 
