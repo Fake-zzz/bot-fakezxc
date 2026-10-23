@@ -1,38 +1,35 @@
-# bot-fakezxc
+# Ritmo + Discord bot
 
-A minimal Discord bot built with discord.js 14.27.0. It registers a global `/hello` slash command and replies with `Hello World!`.
-
-## Required environment variables
-
-- `DISCORD_TOKEN`: the bot token. Store it only in Waifly's server environment or in a server-side `.env` file; never commit the real value.
-- `DISCORD_CLIENT_ID`: the application ID. For this bot: `1562976882872426517`.
+This repository contains the Ritmo habit tracker interface and a discord.js 14.27.0 bot. One Node.js process serves the site and connects the bot to Discord.
 
 ## Run locally
 
 Requires Node.js 22 or newer.
 
-```sh
-npm install
-DISCORD_TOKEN=your_token DISCORD_CLIENT_ID=1562976882872426517 npm start
-```
+1. Copy `.env.example` to `.env` and fill in the bot token.
+2. Run `npm install`.
+3. Run `npm start`.
+4. Open http://localhost:3000.
 
-On Windows PowerShell, set the variables for the current session before running `npm start`:
+The site is served from `public/`. Its current prototype data is stored in the browser's localStorage. It is not yet shared with Discord or other devices.
 
-```powershell
-$env:DISCORD_TOKEN = "your_token"
-$env:DISCORD_CLIENT_ID = "1562976882872426517"
-npm start
-```
+## Required environment variables
+
+- `DISCORD_TOKEN`: the bot token. Keep it in a local `.env` or Waifly server file; never commit it.
+- `DISCORD_CLIENT_ID`: the Discord application ID, currently `1562976882872426517`.
+- `SERVER_PORT` or `PORT`: the public port assigned by Waifly. Local development defaults to `3000`.
 
 ## Waifly
 
-Set Runtime to `node`, Node.js Version to `22`, Main File (Node.js) to `index.js`, Git Repo Address to this repository, and Install Branch to `main`. Enable Auto Update. Keep User Uploaded Files disabled.
+Use Runtime `node`, Node.js `22`, Main File `index.js`, Git Repo Address `https://github.com/Fake-zzz/bot-fakezxc`, and branch `main`. Enable Auto Update and leave User Uploaded Files disabled.
 
-If Waifly does not provide environment variable fields, create a file named `.env` in the server's Files tab after the repository has been cloned:
+Keep the existing server-side `.env` file in the server root, beside `index.js`:
 
 ```env
 DISCORD_TOKEN=your_regenerated_bot_token
 DISCORD_CLIENT_ID=1562976882872426517
 ```
 
-The bot loads `.env` using Node.js's built-in environment-file support. The `.env` file is ignored by Git and must stay on the server; never upload it to GitHub. Restart the server after creating or changing it. The bot registers the global slash command on each start; global command updates can take a while to appear in Discord.
+The server reads Waifly's `SERVER_PORT` allocation and binds the website to `0.0.0.0`. With the primary allocation shown for this server, the site should be reachable at `http://node4.waifly.com:25054` after the updated repository is pulled and the server restarts.
+
+The web UI currently stores information only in each visitor's browser. A shared database and API are a separate next step.
