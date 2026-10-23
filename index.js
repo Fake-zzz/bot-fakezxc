@@ -1,3 +1,11 @@
+const { loadEnvFile } = require("node:process");
+
+try {
+  loadEnvFile();
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
+
 const {
   Client,
   Events,
@@ -11,11 +19,11 @@ const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.DISCORD_CLIENT_ID;
 
 if (!token) {
-  throw new Error("Missing DISCORD_TOKEN environment variable.");
+  throw new Error("Missing DISCORD_TOKEN. Set it in the environment or a local .env file.");
 }
 
 if (!clientId) {
-  throw new Error("Missing DISCORD_CLIENT_ID environment variable.");
+  throw new Error("Missing DISCORD_CLIENT_ID. Set it in the environment or a local .env file.");
 }
 
 const commands = [
