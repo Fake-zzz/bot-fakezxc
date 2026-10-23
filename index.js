@@ -143,6 +143,7 @@ async function postNotification(profile, notification) {
   );
   const existing = existingRows && existingRows[0];
   if (!existing || existing.status === "sent") return;
+  if (Number(existing.attempt_count || 0) >= 5) return;
 
   const age = Date.now() - new Date(existing.updated_at).getTime();
   if (age < 5 * 60 * 1000) return;
@@ -192,7 +193,8 @@ async function deliverNotification(profile, notification, dedupeKey) {
         .setTimestamp(new Date());
       await user.send({embeds:[embed]});
     }else{
-      await user.send(notification.message);
+      const text = Array.isArray(notification.message) ? notification.message.join("\n") : notification.message;
+      await user.send(text);
     }
     await supabaseRequest(
       "notification_log?dedupe_key=eq." + encodeURIComponent(dedupeKey),
@@ -377,7 +379,7 @@ async function sendDailySummary(profile, nowParts) {
   if (profile.notify_habit_milestones) body.push(...(habitLines.length ? ["Hábitos:", ...habitLines] : ["Hábitos: nenhum ativo."]));
 
   await postNotification(profile, {
-    dedupeKey: "summary:" + nowParts.date,
+    dedupeKey: "summary:" + profile.user_id + ":" + nowParts.date,
     type: "daily_summary",
     details: { date: nowParts.date },
     message: body
@@ -427,6 +429,14 @@ async function sendHabitMilestones(profile,nowParts){
   }
 }
 
+async function safely(label, action) {
+  try {
+    await action();
+  } catch (error) {
+    console.error("Notification step failed (" + label + "):", error.message || error);
+  }
+}
+
 async function runNotificationCycle() {
   if (!supabaseUrl || !supabaseServerKey || notificationCycleRunning) return;
   notificationCycleRunning = true;
@@ -442,12 +452,13 @@ async function runNotificationCycle() {
       profile.notify_tasks = profile.notify_tasks !== false;
       profile.notify_goals = profile.notify_goals !== false;
       profile.notify_habit_milestones = profile.notify_habit_milestones !== false;
-      await sendSetupConfirmation(profile);
+      const label = "user " + profile.user_id;
+      await safely(label + " setup", () => sendSetupConfirmation(profile));
       const nowParts = localDateTime(new Date(), profile.timezone);
-      await sendTaskReminders(profile, nowParts);
-      await sendHabitMilestones(profile, nowParts);
-      await sendGoalNotifications(profile, nowParts);
-      await sendDailySummary(profile, nowParts);
+      await safely(label + " tasks", () => sendTaskReminders(profile, nowParts));
+      await safely(label + " habits", () => sendHabitMilestones(profile, nowParts));
+      await safely(label + " goals", () => sendGoalNotifications(profile, nowParts));
+      await safely(label + " summary", () => sendDailySummary(profile, nowParts));
     }
   } catch (error) {
     console.error("Supabase notification cycle failed:", error.message || error);
