@@ -174,6 +174,17 @@ async function deliverNotification(profile, notification, dedupeKey) {
       const details=notification.details||{};
       const embed=new EmbedBuilder().setColor(0xe3b85c).setAuthor({name:"Ritmo · Meta alcançada"}).setTitle("✨ Você chegou lá: "+details.name).setDescription("A meta foi concluída neste período. Cada registro aproximou você do resultado.").addFields({name:"Progresso",value:String(details.total)+" / "+String(details.target)+" "+String(details.unit||""),inline:true}).setFooter({text:"Um passo de cada vez."}).setTimestamp(new Date());
       await user.send({embeds:[embed]});
+    }else if(notification.type==="reminder"){
+      const details=notification.details||{};
+      const dateLabel=new Intl.DateTimeFormat("pt-BR",{weekday:"long",day:"numeric",month:"long",timeZone:profile.timezone||"America/Sao_Paulo"}).format(new Date((details.date||"")+"T12:00:00Z"));
+      const embed=new EmbedBuilder()
+        .setColor(0xe3b85c)
+        .setAuthor({name:"Ritmo · Lembrete"})
+        .setTitle("⏰ Hora de: "+details.title)
+        .addFields({name:"Quando",value:dateLabel+" às "+(details.time||"--:--"),inline:false})
+        .setTimestamp(new Date());
+      if(details.description)embed.setDescription(details.description);
+      await user.send({embeds:[embed]});
     }else if(notification.type==="task_reminder"){
       const details=notification.details||{};
       const repeatLabel={once:"Tarefa única",daily:"Tarefa diária",weekly:"Tarefa semanal",monthly:"Tarefa mensal"}[details.repeat_frequency]||"Tarefa";
@@ -290,6 +301,27 @@ function habitPeriodRange(habit,date){
     next=addCalendarMonths(anchor,(count+1)*months);
   }
   return {start,end:dateOffset(next,-1)};
+}
+
+async function sendReminders(profile, nowParts) {
+  if (!profile.discord_notifications_enabled) return;
+  const userFilter = "user_id=eq." + encodeURIComponent(profile.user_id);
+  const reminders = await getRows("reminders", "select=*&" + userFilter + "&is_active=eq.true");
+  const currentMinutes = Number(nowParts.time.slice(0, 2)) * 60 + Number(nowParts.time.slice(3, 5));
+  for (const reminder of reminders) {
+    const scheduled = reminder.repeat_frequency === "once"
+      ? localDateTime(new Date(reminder.scheduled_at), profile.timezone).time
+      : String(reminder.reminder_time || "").slice(0, 5);
+    const scheduledMinutes = Number(scheduled.slice(0, 2)) * 60 + Number(scheduled.slice(3, 5));
+    if (!occursOn(reminder, nowParts.date, profile.timezone) || currentMinutes < scheduledMinutes || currentMinutes >= scheduledMinutes + 5) continue;
+    await postNotification(profile, {
+      dedupeKey: "reminder:" + reminder.id + ":" + nowParts.date,
+      type: "reminder",
+      entityId: reminder.id,
+      details: { title: reminder.title, description: reminder.description || "", date: nowParts.date, time: scheduled, repeat_frequency: reminder.repeat_frequency },
+      message: "⏰ Hora de: " + reminder.title
+    });
+  }
 }
 
 async function sendGoalNotifications(profile,nowParts){
@@ -457,6 +489,7 @@ async function runNotificationCycle() {
       await safely(label + " setup", () => sendSetupConfirmation(profile));
       const nowParts = localDateTime(new Date(), profile.timezone);
       await safely(label + " tasks", () => sendTaskReminders(profile, nowParts));
+      await safely(label + " reminders", () => sendReminders(profile, nowParts));
       await safely(label + " habits", () => sendHabitMilestones(profile, nowParts));
       await safely(label + " goals", () => sendGoalNotifications(profile, nowParts));
       await safely(label + " summary", () => sendDailySummary(profile, nowParts));
