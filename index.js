@@ -187,7 +187,7 @@ async function deliverNotification(profile, notification, dedupeKey) {
         .addFields(
           {name:"Quando",value:dateLabel+" às "+(details.time||"--:--"),inline:true},
           {name:"Tipo",value:repeatLabel,inline:true},
-          {name:"Seu espaço",value:"Marque a tarefa como concluída no Ritmo quando terminar.",inline:false}
+          {name:"Concluir",value:"Vá para o nosso [Painel](https://fake-zzz.github.io/painel-fakezxc/#) para concluir a tarefa.",inline:false}
         )
         .setFooter({text:"Um passo de cada vez."})
         .setTimestamp(new Date());
@@ -300,6 +300,7 @@ async function sendGoalNotifications(profile,nowParts){
     getRows("goal_progress_entries","select=goal_id,entry_date,amount&"+userFilter+"&entry_date=gte."+dateOffset(nowParts.date,-32)+"&entry_date=lte."+nowParts.date)
   ]);
   for(const goal of goals){
+    if(goal.notify_enabled===false)continue;
     if((goal.starts_on&&nowParts.date<goal.starts_on)||(goal.ends_on&&nowParts.date>goal.ends_on))continue;
     const range=periodRange(goal,nowParts.date);
     const total=progress.filter((entry)=>entry.goal_id===goal.id&&entry.entry_date>=range.start&&entry.entry_date<=range.end).reduce((sum,entry)=>sum+Number(entry.amount||0),0);
